@@ -1,0 +1,137 @@
+import argparse
+import time
+import sys
+
+try:
+    from pywinauto import Application
+    from pywinauto.findwindows import ElementNotFoundError
+except ImportError:
+    print("pywinauto is not installed. Run: pip install pywinauto")
+    sys.exit(1)
+
+
+# Control types that count as "clickable buttons" for this test.
+# You can trim/extend this list depending on what you consider a "button".
+CLICKABLE_TYPES = {
+    "Button",
+    "RadioButton",
+    "CheckBox",
+    "MenuItem",
+    "SplitButton",
+    "ToggleButton",
+}
+
+
+def connect(title=None, process=None, backend="uia"):
+    """Connect to an already-running application window."""
+    app = Application(backend=backend)
+    try:
+        if title:
+            app.connect(title_re=f".*{title}.*")
+        elif process:
+            app.connect(path=process)
+        else:
+            raise ValueError("Provide either --title or --process")
+    except ElementNotFoundError:
+        print("Could not find a running window matching that title/process.")
+        print("Make sure the app is already open before running this script.")
+        sys.exit(1)
+    return app
+
+
+def find_all_buttons(window):
+    """Recursively collect every clickable control under the given window."""
+    buttons = []
+    try:
+        descendants = window.descendants()
+    except Exception as e:
+        print(f"Failed to enumerate controls: {e}")
+        return buttons
+
+    for ctrl in descendants:
+        try:
+            ctrl_type = ctrl.friendly_class_name()
+        except Exception:
+            continue
+        if ctrl_type in CLICKABLE_TYPES:
+            buttons.append(ctrl)
+    return buttons
+
+
+def click_and_verify(ctrl, delay=0.4):
+    """
+    Click a control and report success/failure.
+    Returns (name, status, detail).
+    """
+    try:
+        name = ctrl.window_text() or ctrl.friendly_class_name()
+    except Exception:
+        name = "<unnamed>"
+
+    try:
+        if not ctrl.is_enabled():
+            return (name, "SKIPPED", "control disabled")
+        if not ctrl.is_visible():
+            return (name, "SKIPPED", "control not visible")
+
+        ctrl.click_input()
+        time.sleep(delay)
+        return (name, "PASS", "clicked successfully")
+
+    except Exception as e:
+        return (name, "FAIL", str(e))
+
+
+def run_test(title=None, process=None, backend="uia", delay=0.4):
+    app = connect(title=title, process=process, backend=backend)
+    window = app.top_window()
+    window.set_focus()
+
+    print(f"Connected to window: {window.window_text()!r}")
+    buttons = find_all_buttons(window)
+    print(f"Found {len(buttons)} clickable controls.\n")
+
+    results = []
+    for i, ctrl in enumerate(buttons, start=1):
+        name, status, detail = click_and_verify(ctrl, delay=delay)
+        results.append((name, status, detail))
+        print(f"[{i}/{len(buttons)}] {status:8} | {name:30} | {detail}")
+
+    # Summary
+    passed = sum(1 for r in results if r[1] == "PASS")
+    failed = sum(1 for r in results if r[1] == "FAIL")
+    skipped = sum(1 for r in results if r[1] == "SKIPPED")
+
+    print("\n----- SUMMARY -----")
+    print(f"Total:   {len(results)}")
+    print(f"Passed:  {passed}")
+    print(f"Failed:  {failed}")
+    print(f"Skipped: {skipped}")
+
+    if failed:
+        print("\nFailed buttons:")
+        for name, status, detail in results:
+            if status == "FAIL":
+                print(f"  - {name}: {detail}")
+
+    return results
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Click every button in a desktop app and report results.")
+    parser.add_argument("--title", help="Window title (or partial title) of the app to test")
+    parser.add_argument("--process", help="Process executable name, e.g. notepad.exe")
+    parser.add_argument("--backend", default="uia", choices=["uia", "win32"],
+                         help="pywinauto backend to use (default: uia)")
+    parser.add_argument("--delay", type=float, default=0.4,
+                         help="Seconds to wait after each click (default: 0.4)")
+    args = parser.parse_args()
+
+    if not args.title and not args.process:
+        parser.error("You must provide --title or --process")
+
+    run_test(title=args.title, process=args.process, backend=args.backend, delay=args.delay)
+
+
+if __name__ == "__main__":
+    main()
